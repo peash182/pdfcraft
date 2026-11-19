@@ -1454,11 +1454,13 @@ fn toolbar(app: &mut PdfCraftApp, ui: &mut egui::Ui, n: &mut Intents) {
 
     // Row 1: the settings (each written back into the persisted draft).
     ui.horizontal_wrapped(|ui| {
+        let language_before = d.language.clone();
         craft_ui::ComboBox::from_id_salt("ocr-verify-language").width(150.0).selected_text(language_name(&d.language)).show_ui(ui, |ui| {
             for (code, name) in pdfcraft_engine::ocr::LANGUAGES {
                 ui.selectable_value(&mut d.language, (*code).to_string(), *name);
             }
         });
+        ocr_ui::follow_language_with_engine(&language_before, &d.language, &mut d.engine);
         engine_combo(ui, &mut d.engine, &mut d.strategy);
         strategy_combo(ui, &mut d.strategy);
         output_combo(ui, &mut d.output_mode);

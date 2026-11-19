@@ -6743,8 +6743,8 @@ milestone = "M10"
 status = "partial"
 commands = ["ocr.recognize"]
 tools = ["ocr_recognize"]
-evidence = ["crates/ui-egui/tests/it/ocr.rs::recognize_text_dialog_adds_searchable_text", "crates/ocr/src/tesseract.rs::language_table_maps_and_falls_back"]
-notes = "The choice feeds both engines: ocrs reads only unaccented Latin (its model table holds English); tesseract maps 12 allow-listed codes (the language enum comes from the engine's own table) but only as far as the installed language packs cover. Recognition quality beyond the tested English set is unproven."
+evidence = ["crates/ui-egui/tests/it/ocr.rs::recognize_text_dialog_adds_searchable_text", "crates/ocr/src/tesseract.rs::language_table_maps_and_falls_back", "crates/ocr/src/tesseract.rs::bangla_maps_to_the_bengali_packs", "crates/engine/src/ocr.rs::bangla_is_read_by_tesseract_alone", "crates/engine/src/ocr.rs::bangla_without_its_language_data_is_refused", "crates/engine/tests/it/ocr_edit.rs::bangla_ocr_words_come_back_as_the_same_unicode", "crates/automation/tests/it/automation.rs::ocr_tools_offer_bangla_and_route_it_to_tesseract"]
+notes = "Offered: English (ocrs, or tesseract) and Bangla, alone or with English (tesseract only: the ben and ben+eng packs, which the user installs; Bangla is never read by ocrs, and the engine refuses it by name when a tesseract or the pack is missing). The language list the interface, the CLI and the MCP tools share comes from pdfcraft_ocr::OFFERED_LANGUAGES. The other 11 allow-listed tesseract codes are mapped but not offered yet. Bangla is recognized as Unicode into the searchable layer; the editable output draws characters no craft-fonts face has as '?'. Recognition quality beyond the tested English set is unproven: no Bengali language data was available to the tests, which fake the tesseract program."
 
 [[feature]]
 id = "ocr.searchable-image"

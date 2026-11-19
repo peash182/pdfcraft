@@ -225,6 +225,16 @@ pub struct AutoOcr {
     pub generation: u64,
 }
 
+/// Choosing a language that only Tesseract reads (Bangla) while the engine is the built-in one
+/// switches the engine to Tesseract, in the dropdown where the user can see it: the built-in
+/// models read unaccented Latin only, and a run with them would be refused. Any other change
+/// (the same language, a language ocrs reads, an engine already chosen) leaves the engine alone.
+pub(crate) fn follow_language_with_engine(before: &str, language: &str, engine: &mut EngineChoice) {
+    if before != language && *engine == EngineChoice::Ocrs && pdfcraft_engine::ocr::tesseract_only(language) {
+        *engine = EngineChoice::Tesseract;
+    }
+}
+
 /// The Tesseract probe runs in the background (the interface never waits on a process): while
 /// it runs, an engine choice reads as "still checking", so look again soon.
 pub(crate) fn keep_asking_while_probing(ctx: &egui::Context) {
@@ -284,11 +294,13 @@ pub(crate) fn body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) -> (boo
                 egui::Grid::new("ocr-settings").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
                     ui.label(tl!("Document language"));
                     let name = LANGUAGES.iter().find(|l| l.0 == d.language).map_or("English", |l| l.1);
+                    let language_before = d.language.clone();
                     craft_ui::ComboBox::from_id_salt("ocr-language").selected_text(tl!(name)).width(220.0).show_ui(ui, |ui| {
                         for (code, name) in LANGUAGES {
                             ui.selectable_value(&mut d.language, (*code).to_string(), tl!(*name));
                         }
                     });
+                    follow_language_with_engine(&language_before, &d.language, &mut d.engine);
                     ui.end_row();
                     ui.label(tl!("Engine"));
                     let engine_name = match d.engine {
@@ -1098,6 +1110,31 @@ mod tests {
     use crate::{Dialog, LeftPanel, Mode, QuickTool};
     use pdfcraft_engine::ocr::{Recognizer, Recognizers};
     use pdfcraft_engine::{Edit, Session};
+
+    /// Picking Bangla moves the built-in engine (which cannot read it) to Tesseract, visibly in
+    /// the dropdown; nothing else moves the engine: not re-picking the same language, not
+    /// picking English, and not an engine the user already chose.
+    #[test]
+    fn choosing_bangla_switches_the_built_in_engine_to_tesseract() {
+        let mut engine = EngineChoice::Ocrs;
+        follow_language_with_engine("en", "bn", &mut engine);
+        assert_eq!(engine, EngineChoice::Tesseract);
+
+        let mut engine = EngineChoice::Ocrs;
+        follow_language_with_engine("en", "bn-en", &mut engine);
+        assert_eq!(engine, EngineChoice::Tesseract, "Bangla with English needs Tesseract too");
+
+        for (before, language, start) in [
+            ("bn", "bn", EngineChoice::Ocrs),
+            ("bn", "en", EngineChoice::Ocrs),
+            ("en", "bn", EngineChoice::Auto),
+            ("en", "bn", EngineChoice::Tesseract),
+        ] {
+            let mut engine = start;
+            follow_language_with_engine(before, language, &mut engine);
+            assert_eq!(engine, start, "{before} → {language} with {start:?} leaves the engine alone");
+        }
+    }
 
     /// A one-page PDF that is one picture covering the page.
     fn scan() -> Vec<u8> {
