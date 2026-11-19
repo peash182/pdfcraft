@@ -42,6 +42,10 @@ pub const LANGUAGE_CODES: &[(&str, &str)] = &[
     ("ko", "kor"),
     ("ar", "ara"),
     ("nl", "nld"),
+    // Bengali script. `bn-en` reads Bangla with English and digits mixed in (most Bangla
+    // documents have some), which needs both packs; Tesseract takes them joined by `+`.
+    ("bn", "ben"),
+    ("bn-en", "ben+eng"),
 ];
 
 /// English names for [`LANGUAGE_CODES`] (dropdowns show code + name).
@@ -58,6 +62,8 @@ pub const LANGUAGE_NAMES: &[(&str, &str)] = &[
     ("ko", "Korean"),
     ("ar", "Arabic"),
     ("nl", "Dutch"),
+    ("bn", "Bangla"),
+    ("bn-en", "Bangla + English"),
 ];
 
 /// Map a settings language code to a Tesseract one: trimmed, case-insensitive, allow-listed;
@@ -65,6 +71,13 @@ pub const LANGUAGE_NAMES: &[(&str, &str)] = &[
 pub fn language_code(code: &str) -> &'static str {
     let c = code.trim().to_ascii_lowercase();
     LANGUAGE_CODES.iter().find(|(k, _)| *k == c).map(|(_, v)| *v).unwrap_or("eng")
+}
+
+/// The Tesseract language packs a settings language code needs, by tessdata name (`bn-en` →
+/// `ben`, `eng`): what `--list-langs` must report before a run can succeed. Allow-listed like
+/// [`language_code`], so nothing here ever comes from document data.
+pub fn language_packs(code: &str) -> Vec<&'static str> {
+    language_code(code).split('+').collect()
 }
 
 /// The user-configured program location, when valid: `$PDFCRAFT_TESSERACT` (a user
@@ -689,9 +702,46 @@ mod tests {
         assert_eq!(language_code(""), "eng");
         // The security property: whatever the settings say, only allow-listed codes reach a
         // process.
-        for code in ["en", "de", "fr", "es", "it", "pt", "ru", "zh", "ja", "ko", "ar", "nl", "klingon", "", " eng ", "EN/;rm"] {
+        for code in [
+            "en", "de", "fr", "es", "it", "pt", "ru", "zh", "ja", "ko", "ar", "nl", "bn", "bn-en", "klingon", "", " eng ", "EN/;rm", "bn+en", "ben+x",
+        ] {
             let mapped = language_code(code);
             assert!(LANGUAGE_CODES.iter().any(|(_, v)| *v == mapped), "{code:?} → {mapped:?} is not allow-listed");
+        }
+    }
+
+    /// Bangla maps to Tesseract's Bengali pack, alone or with English; it must never fall back
+    /// to `eng` silently (that would read Bengali script as Latin and report success), and a
+    /// hand-written `+` in a settings value is not a way to name other packs.
+    #[test]
+    fn bangla_maps_to_the_bengali_packs() {
+        assert_eq!(language_code("bn"), "ben");
+        assert_eq!(language_code(" BN "), "ben", "trimmed, case-insensitive");
+        assert_eq!(language_code("bn-en"), "ben+eng");
+        assert_eq!(language_packs("bn"), ["ben"]);
+        assert_eq!(language_packs("bn-en"), ["ben", "eng"]);
+        assert_eq!(language_packs("en"), ["eng"]);
+        assert_eq!(language_code("bn+en"), "eng", "only allow-listed codes name a pack");
+        assert_eq!(language_code("ben"), "eng", "a tessdata name is not a settings code");
+    }
+
+    /// Every language the interface offers has a Tesseract mapping and a name, and the ones
+    /// ocrs cannot read are flagged so the engine selector keeps ocrs away from them.
+    #[test]
+    fn every_offered_language_maps_to_tesseract() {
+        for (code, name) in crate::OFFERED_LANGUAGES {
+            assert!(LANGUAGE_CODES.iter().any(|(k, _)| k == code), "{code} has no Tesseract code");
+            assert_eq!(LANGUAGE_NAMES.iter().find(|(k, _)| k == code).map(|(_, n)| n), Some(name), "{code}: the two name tables disagree");
+        }
+        for (code, _) in crate::LANGUAGES {
+            assert!(crate::OFFERED_LANGUAGES.iter().any(|(k, _)| k == code), "{code}: ocrs reads it but it is not offered");
+            assert!(!crate::tesseract_only(code), "{code}: ocrs reads it");
+        }
+        for code in ["bn", "bn-en", " BN "] {
+            assert!(crate::tesseract_only(code), "{code} needs Tesseract");
+        }
+        for code in ["en", "de", "klingon", ""] {
+            assert!(!crate::tesseract_only(code), "{code} is not a Tesseract-only offered language");
         }
     }
 

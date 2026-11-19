@@ -27,6 +27,11 @@ impl Automation {
                 "auto" | "automatic" | "ensemble" => EngineChoice::Auto,
                 other => return Err(ToolError::InvalidArgs(format!("unsupported engine {other:?} (ocrs, tesseract or auto)"))),
             };
+        } else if pdfcraft_engine::ocr::tesseract_only(&settings.language) {
+            // No engine named, and the language is one the built-in models cannot read at
+            // all (Bangla): Tesseract is the only engine that can do the job asked for. An
+            // explicit "engine": "ocrs" still fails, naming why.
+            settings.engine = EngineChoice::Tesseract;
         }
         settings.strategy = match a.opt_str("strategy")? {
             Some(s) => match s.trim().to_ascii_lowercase().as_str() {

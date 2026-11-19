@@ -14,8 +14,14 @@ use std::time::{Duration, Instant};
 use pdfcraft_render::text::TextFilter;
 use pdfcraft_render::{PageInfo, PageRenderer, RenderConfig, RenderRequest, RequestKind};
 
+/// The languages recognition offers: what the built-in models read, then what only Tesseract
+/// reads (Bangla). The interface, the CLI and the MCP tools all validate against this list.
+pub use pdfcraft_ocr::OFFERED_LANGUAGES as LANGUAGES;
+/// Whether a language code is one only Tesseract reads (Bangla): the interface and the tools
+/// pick the Tesseract engine for it when the engine was not explicitly chosen.
+pub use pdfcraft_ocr::tesseract_only;
 pub use pdfcraft_ocr::{
-    ConfidenceBand, DETECTION_MODEL, LANGUAGES, Line, MergeStrategy, Models, Ocr, OcrError, OcrImage, PlacedWord, RECOGNITION_MODEL, Recognizer,
+    ConfidenceBand, DETECTION_MODEL, Line, MergeStrategy, Models, Ocr, OcrError, OcrImage, PlacedWord, RECOGNITION_MODEL, Recognizer,
     StrategyOutcome, Word, band_for, is_suspect, lines_from_json, low_confidence,
 };
 
@@ -108,7 +114,9 @@ impl OutputMode {
 pub struct OcrSettings {
     /// Resolution pages are rendered at for recognition (Acrobat's "Downsample to" choices).
     pub dpi: f32,
-    /// Language code from [`LANGUAGES`] (the models read the Latin alphabet, whatever this says).
+    /// Language code from [`LANGUAGES`]. The built-in models read the Latin alphabet whatever
+    /// this says; a Tesseract-only language (Bangla) is read by Tesseract alone, see
+    /// [`recognizers`].
     pub language: String,
     /// Leave pages that already have text alone (Acrobat reports "page contains renderable
     /// text" and skips them). When `false`, such pages are read too (a picture on a page that
@@ -541,6 +549,12 @@ pub fn recognizers(settings: &OcrSettings) -> Result<Recognizers, String> {
     // names its engines never starts it: only Tesseract and Automatic read anything from it,
     // so an ocrs-only job pays no process and no wait.
     let configured = configured_tesseract(settings);
+    // A script ocrs cannot read (Bangla) is Tesseract's alone, whichever engine was chosen:
+    // ocrs would answer with confident Latin nonsense, and as an Automatic second opinion its
+    // words would be merged into the page.
+    if pdfcraft_ocr::tesseract_only(&settings.language) {
+        return tesseract_only_recognizers(settings, configured.as_deref());
+    }
     let tesseract =
         if matches!(settings.engine, EngineChoice::Tesseract | EngineChoice::Auto) { tesseract_engine(configured.as_deref()) } else { None };
     let mut slot = ENGINES.lock().unwrap_or_else(|e| e.into_inner());
@@ -559,6 +573,43 @@ pub fn recognizers(settings: &OcrSettings) -> Result<Recognizers, String> {
             (None, None) => Err(models_missing()),
         },
     }
+}
+
+/// An offered language's English name, for error messages; the code itself when it is unknown.
+fn offered_language_name(code: &str) -> String {
+    let c = code.trim().to_ascii_lowercase();
+    LANGUAGES.iter().find(|(k, _)| *k == c).map_or_else(|| code.to_string(), |(_, n)| (*n).to_string())
+}
+
+/// The engine pair for a language only Tesseract reads: Tesseract alone, with no second
+/// opinion. An engine choice that cannot read it, a missing program, or a missing language
+/// pack each fail with their cause named, never with a quiet fallback to a Latin reading.
+#[cfg(not(target_arch = "wasm32"))]
+fn tesseract_only_recognizers(settings: &OcrSettings, configured: Option<&str>) -> Result<Recognizers, String> {
+    let name = offered_language_name(&settings.language);
+    if settings.engine == EngineChoice::Ocrs {
+        return Err(format!("{name} needs the Tesseract engine: the built-in engine reads only English. Choose Tesseract or Automatic."));
+    }
+    let primary = tesseract_engine(configured).ok_or_else(|| format!("{name} needs Tesseract: {}", tesseract_unavailable()))?;
+    let installed = primary.languages();
+    let missing: Vec<&str> = pdfcraft_ocr::tesseract::language_packs(&settings.language)
+        .into_iter()
+        .filter(|pack| !installed.iter().any(|(code, _)| code == pack))
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "Tesseract has no {} language data, which {name} needs. Install it (on Linux the {} package; elsewhere the .traineddata file in Tesseract's tessdata folder) and try again.",
+            missing.join(" or "),
+            missing.iter().map(|p| format!("tesseract-ocr-{p}")).collect::<Vec<_>>().join(" and "),
+        ));
+    }
+    Ok(Recognizers { primary, secondary: None })
+}
+
+/// The web build has no Tesseract, so a language only Tesseract reads cannot be recognized.
+#[cfg(target_arch = "wasm32")]
+fn tesseract_only_recognizers(settings: &OcrSettings, _configured: Option<&str>) -> Result<Recognizers, String> {
+    Err(format!("{} needs Tesseract: {}", offered_language_name(&settings.language), tesseract_unavailable()))
 }
 
 /// Why Tesseract cannot run, named for the user.
@@ -1722,6 +1773,112 @@ mod tests {
         let wants = OcrSettings { engine: EngineChoice::Tesseract, tesseract_path: Some(program), ..Default::default() };
         let _ = recognizers(&wants);
         assert!(marker.exists(), "a tesseract job probes its program");
+    }
+
+    /// A fake `tesseract` for the Bangla routing tests: it lists `packs` for `--list-langs`,
+    /// answers any recognition with the one Bangla word in `out.tsv`, and records its arguments
+    /// in `args.txt`. Returns the program's path and the directory it lives in. Needs a Unix
+    /// shell, like the other process fixtures.
+    #[cfg(unix)]
+    fn fake_tesseract(name: &str, packs: &[&str]) -> (String, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("pdfcraft-ocr-bangla-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let header = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n";
+        let word = "5\t1\t1\t1\t1\t1\t10\t10\t80\t20\t91.5\tবাংলা\n";
+        std::fs::write(dir.join("out.tsv"), format!("{header}{word}")).unwrap();
+        let listing: String = packs.iter().map(|p| format!("{p}\\n")).collect();
+        let script = format!(
+            "#!/bin/sh\ndir=$(dirname \"$0\")\n\
+             if [ \"$1\" = \"--list-langs\" ]; then printf 'List of available languages in \"/fake\" ({}):\\n{listing}'; exit 0; fi\n\
+             if [ \"$1\" = \"--version\" ]; then echo 'tesseract 5.3.4'; exit 0; fi\n\
+             printf '%s\\n' \"$@\" > \"$dir/args.txt\"\ncat \"$dir/out.tsv\"\n",
+            packs.len()
+        );
+        let program = dir.join("fake-tesseract");
+        std::fs::write(&program, script).unwrap();
+        let mut perms = std::fs::metadata(&program).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&program, perms).unwrap();
+        (program.to_string_lossy().into_owned(), dir)
+    }
+
+    fn bangla(engine: EngineChoice, language: &str, program: String) -> OcrSettings {
+        OcrSettings { engine, language: language.into(), tesseract_path: Some(program), ..Default::default() }
+    }
+
+    /// Bangla is Tesseract's alone: Tesseract and Automatic both read it with Tesseract as the
+    /// only engine (no ocrs reading, no second opinion to merge in), the built-in engine is
+    /// refused by name, and the language code that reaches the process is `ben`, or
+    /// `ben+eng` for Bangla with English.
+    #[cfg(unix)]
+    #[test]
+    fn bangla_is_read_by_tesseract_alone() {
+        let (program, dir) = fake_tesseract("routing", &["ben", "eng", "osd"]);
+        for engine in [EngineChoice::Tesseract, EngineChoice::Auto] {
+            let r = recognizers(&bangla(engine, "bn", program.clone())).unwrap();
+            assert_eq!(r.primary.id(), "tesseract", "{engine:?}");
+            assert!(r.secondary.is_none(), "{engine:?}: ocrs must not be a second opinion on Bengali script");
+        }
+        let err = recognizers(&bangla(EngineChoice::Ocrs, "bn", program.clone())).err().unwrap();
+        assert!(err.contains("Bangla") && err.contains("Tesseract") && err.contains("only English"), "{err}");
+
+        // The reading itself: the right pack is asked for, and the Bangla word comes back whole.
+        let image = OcrImage::new(100, 40, vec![255; 100 * 40 * 4]).unwrap();
+        for (code, want) in [("bn", "ben"), ("bn-en", "ben+eng")] {
+            let r = recognizers(&bangla(EngineChoice::Auto, code, program.clone())).unwrap();
+            let lines = r.primary.recognize(&image, &pdfcraft_ocr::RecognizeOptions { language: code.into() }).unwrap();
+            assert_eq!(lines.len(), 1);
+            assert_eq!(lines[0].words.len(), 1);
+            assert_eq!(lines[0].words[0].text, "বাংলা", "{code}: the word comes back as read");
+            assert_eq!(lines[0].words[0].source, "tesseract");
+            let args = std::fs::read_to_string(dir.join("args.txt")).unwrap();
+            let args: Vec<&str> = args.lines().collect();
+            assert!(args.windows(2).any(|w| w == ["-l", want]), "{code}: expected -l {want}, got {args:?}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A Tesseract without the Bengali data is refused with the missing pack named, not run:
+    /// asking it for `ben` anyway would fail late with Tesseract's own error, or (worse, were
+    /// it to fall back) read Bengali script as Latin and report success. `bn-en` needs both.
+    #[cfg(unix)]
+    #[test]
+    fn bangla_without_its_language_data_is_refused() {
+        let (program, dir) = fake_tesseract("no-ben", &["eng", "osd"]);
+        for engine in [EngineChoice::Tesseract, EngineChoice::Auto] {
+            let err = recognizers(&bangla(engine, "bn", program.clone())).err().unwrap();
+            assert!(err.contains("ben") && err.contains("tesseract-ocr-ben") && err.contains("Bangla"), "{engine:?}: {err}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+
+        let (program, dir) = fake_tesseract("no-eng", &["ben", "osd"]);
+        assert!(recognizers(&bangla(EngineChoice::Auto, "bn", program.clone())).is_ok(), "Bangla alone needs only ben");
+        let err = recognizers(&bangla(EngineChoice::Auto, "bn-en", program)).err().unwrap();
+        assert!(err.contains("eng") && !err.contains("ben"), "only the missing pack is named: {err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// With no usable Tesseract (here: a configured path that does not exist, which fails
+    /// closed rather than searching the PATH) Bangla says what it needs, under every engine
+    /// that is not already refused for being the wrong one.
+    #[test]
+    fn bangla_without_tesseract_names_what_it_needs() {
+        let missing = std::env::temp_dir().join("pdfcraft-ocr-bangla-no-such-dir").join("tesseract");
+        for engine in [EngineChoice::Tesseract, EngineChoice::Auto] {
+            let err = recognizers(&bangla(engine, "bn", missing.to_string_lossy().into_owned())).err().unwrap();
+            assert!(err.contains("Bangla") && err.contains("Tesseract"), "{engine:?}: {err}");
+        }
+    }
+
+    /// English is unaffected: it still reaches ocrs when the models exist, and a language
+    /// ocrs reads is never routed away from it.
+    #[test]
+    fn english_is_not_tesseract_only() {
+        assert!(!pdfcraft_ocr::tesseract_only("en"));
+        assert!(LANGUAGES.iter().any(|(c, n)| *c == "bn" && *n == "Bangla"), "Bangla is offered");
+        assert!(LANGUAGES.iter().any(|(c, _)| *c == "en"), "English is still offered, first");
+        assert_eq!(LANGUAGES.first().map(|l| l.0), Some("en"));
     }
 
     /// A fake engine for the batch skip logic: reads one confident word from anything, counts

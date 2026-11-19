@@ -97,8 +97,17 @@ or discards the result. Empty corrections remove words. Searchable acceptance is
 step; editable acceptance writes a separate file. `ocr_dictionary` reads or atomically
 updates the UI's per-language dictionary format through an explicitly root-confined path.
 
-Not yet: languages beyond the tested set (the `ocrs` models read only unaccented Latin; the
-Tesseract side is bounded by its allow-list and whatever its installed language packs cover),
-OCR in the browser (the tesseract module is compiled out for wasm32), the deep scan-cleanup
+Bangla is offered next to English (`OFFERED_LANGUAGES`: `bn`, and `bn-en` for Bangla with
+English mixed in). It is read by Tesseract alone: the `ocrs` models cannot read Bengali script
+(they would answer with confident Latin nonsense), so the engine selector never runs them on it,
+neither as the engine nor as Automatic's second opinion. It maps to the `ben` (and `eng`)
+packs, which the user installs with Tesseract (Linux: `tesseract-ocr-ben`; elsewhere
+`ben.traineddata`, best taken from `tessdata_best`); a missing program, an engine choice that
+cannot read it, or a missing pack is refused with its cause named. The words go into the
+searchable layer as the Unicode Tesseract returned. Recognition quality is Tesseract's: clean
+printed text at 300 dpi reads well; photos, low resolution and handwriting do not.
+
+Not yet: the other languages in Tesseract's allow-list are mapped but not offered, the `ocrs`
+models read only unaccented Latin, OCR in the browser (the tesseract module is compiled out for wasm32), the deep scan-cleanup
 options (descreen, background removal, edge-shadow removal), and editable glyph coverage
 beyond the available attributed faces.

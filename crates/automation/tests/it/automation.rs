@@ -9382,6 +9382,39 @@ fn ocr_tools_make_a_scan_searchable() {
 }
 
 /// An editable-text recognition writes a NEW file of visible text, never the source.
+/// Bangla is offered through the tools, and it is Tesseract's alone: an engine named for it
+/// must be able to read it, and with no engine named Tesseract is the one used. Needs no
+/// models, so it runs everywhere; what a run then does depends on whether this machine has
+/// Tesseract with the Bengali data, which the test does not assume.
+#[test]
+fn ocr_tools_offer_bangla_and_route_it_to_tesseract() {
+    let dir = workdir("ocr-bangla");
+    let mut a = auto(&dir);
+    let status = ok(&mut a, "ocr_status", json!({}));
+    let codes: Vec<&str> = status["languages"].as_array().unwrap().iter().map(|l| l["code"].as_str().unwrap()).collect();
+    assert_eq!(codes, ["en", "bn", "bn-en"], "{status}");
+    assert_eq!(status["languages"][1]["name"], "Bangla", "{status}");
+
+    let doc = ok(&mut a, "doc_open", json!({ "path": "a.pdf" }))["doc"].as_u64().unwrap();
+    // Only offered codes pass: a Tesseract pack name or an unknown code is an argument error that
+    // lists what is supported.
+    for language in ["xx", "ben", "bn+en", ""] {
+        let why = a.call("ocr_recognize", &json!({ "doc": doc, "language": language })).unwrap_err();
+        assert!(matches!(why, ToolError::InvalidArgs(_)), "{language:?}: {why}");
+        assert!(why.to_string().contains("bn-en"), "{language:?}: the supported codes are listed: {why}");
+    }
+    // The built-in engine, named outright, cannot read Bengali script: refused with the reason.
+    let why = a.call("ocr_recognize", &json!({ "doc": doc, "language": "bn", "engine": "ocrs", "skip_text_pages": false })).unwrap_err();
+    assert!(matches!(why, ToolError::Failed(_)), "{why}");
+    assert!(why.to_string().contains("only English") && why.to_string().contains("Tesseract"), "{why}");
+    // No engine named: Tesseract is chosen for it, so that refusal does not apply.
+    for language in ["bn", "bn-en"] {
+        if let Err(e) = a.call("ocr_recognize", &json!({ "doc": doc, "language": language, "skip_text_pages": false })) {
+            assert!(!e.to_string().contains("only English"), "{language}: the engine defaults to Tesseract: {e}");
+        }
+    }
+}
+
 #[test]
 fn ocr_recognize_editable_output_writes_visible_text() {
     let dir = workdir("ocr-editable");

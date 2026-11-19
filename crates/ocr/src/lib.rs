@@ -35,6 +35,20 @@ pub use ocrs::{
     ALPHABET, DETECTION_MODEL, DETECTION_MODEL_SHA256, LANGUAGES, Models, Ocr, OcrsRecognizer, RECOGNITION_MODEL, RECOGNITION_MODEL_SHA256,
 };
 
+/// Every language PdfCraft offers for recognition, as `(code, name)`: first what the built-in
+/// ocrs models read ([`LANGUAGES`]), then what only Tesseract reads. This is the list the
+/// interface, the CLI and the MCP tools share, so a language added here shows up in all three
+/// (and `tesseract::LANGUAGE_CODES` must map it; a test holds the two together).
+pub const OFFERED_LANGUAGES: &[(&str, &str)] = &[("en", "English"), ("bn", "Bangla"), ("bn-en", "Bangla + English")];
+
+/// Whether `code` is an offered language that the built-in ocrs models cannot read at all, so
+/// only Tesseract can: ocrs reads unaccented Latin and would answer Bengali script with
+/// confident Latin nonsense, never an error. Trimmed and case-insensitive, like the code maps.
+pub fn tesseract_only(code: &str) -> bool {
+    let c = code.trim().to_ascii_lowercase();
+    OFFERED_LANGUAGES.iter().any(|(k, _)| *k == c) && !LANGUAGES.iter().any(|(k, _)| *k == c)
+}
+
 pub use pdfcraft_fonts::TextPlan;
 pub use pdfcraft_fonts::helvetica_width;
 

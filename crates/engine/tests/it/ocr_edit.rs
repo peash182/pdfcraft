@@ -818,3 +818,30 @@ fn a_soft_mask_selected_before_a_cm_stays_put_when_the_edit_is_lifted() {
         assert_eq!(ink(&s, id), ink(&plain, plain_id), "{edit:?}: the mask does not hide the new text");
     }
 }
+
+fn placed(text: &str, origin: [f64; 2], across: f64) -> PlacedWord {
+    PlacedWord { text: text.into(), origin, across: [across, 0.0], up: [0.0, 20.0], confidence: Some(92.0), source: "tesseract".into() }
+}
+
+/// Bangla read by Tesseract reaches the page as the same Unicode it was recognized as, so the
+/// page can be searched and copied: conjuncts (a consonant, virama, consonant), vowel signs
+/// that are written before the consonant they follow in the text, Bengali digits and Latin
+/// words in the same layer all survive the invisible layer's font and ToUnicode map unchanged.
+#[test]
+fn bangla_ocr_words_come_back_as_the_same_unicode() {
+    let words = ["বাংলাদেশ", "বিশ্ববিদ্যালয়", "ক্ষমতা", "কৌতূহল", "১২৩৪", "ঢাকা", "PdfCraft"];
+    let layer: Vec<PlacedWord> =
+        words.iter().enumerate().map(|(i, w)| placed(w, [10.0 + (i % 2) as f64 * 90.0, 10.0 + (i / 2) as f64 * 22.0], 80.0)).collect();
+    let (s, id) = scanned_with(layer);
+    let blocks = s.get(id).unwrap().text_blocks(0);
+    assert!(blocks.iter().all(|b| b.invisible), "the layer is invisible: the scan is left as it was");
+    let text: String = blocks.iter().map(|b| b.text.as_str()).collect::<Vec<_>>().join(" ");
+    for word in words {
+        assert!(text.contains(word), "{word:?} did not survive the text layer: {text:?}");
+    }
+    // Nothing was normalised or substituted on the way in.
+    let want: std::collections::BTreeSet<char> = words.iter().flat_map(|w| w.chars()).collect();
+    let got: std::collections::BTreeSet<char> = text.chars().filter(|c| !c.is_whitespace()).collect();
+    assert_eq!(got, want, "the page holds exactly the characters that were recognized: {text:?}");
+    assert!(!text.contains('?'), "no character fell back to a question mark: {text:?}");
+}

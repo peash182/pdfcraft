@@ -174,8 +174,11 @@ update the numbers.
   (`AGENTS.md` §4).
 - **Estimate:** 45–80 h (≈ 0.2–0.4 h per issue). **Doc:** this file.
 
-### 7. OCR reads only unaccented Latin
+### 7. OCR reads only unaccented Latin (and Bangla, through Tesseract)
 
+- **Done since:** Bangla, alone or with English, through an installed Tesseract with the `ben`
+  language data (never through the built-in engine, which cannot read it). Searchable output
+  keeps the Unicode; editable output needs a Bengali face in craft-fonts.
 - **Missing:** every other script and accented Latin; editable-text output; deskew, rotation,
   despeckle and background clean-up as options of Recognize text (Enhance scanned file removes
   the background and edge shadows on grey and RGB scans and despeckles those and 1-bit ones; it
